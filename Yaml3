@@ -1,0 +1,27 @@
+# render.yaml - Render service manifest (backend)
+#
+# Usage:
+# - You can use this manifest when creating a new Render service via the Render dashboard
+#   or with the Render CLI. Edit values (service name, branch, plan) before applying.
+#
+services:
+  - type: web_service
+    name: beatlab-backend
+    env: docker                # use Dockerfile (backend/Dockerfile included in patch)
+    repo: https://github.com/Alfredfinamore/beatlab
+    branch: main
+    plan: starter              # change to the plan you want (starter, free, standard, professional)
+    buildCommand: "npm install --prefix backend"
+    startCommand: "npm run start --prefix backend"
+    autoDeploy: true
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase: false
+      - key: JWT_SECRET
+        fromDatabase: false
+      - key: STRIPE_SECRET_KEY
+        fromDatabase: false
+      - key: STRIPE_WEBHOOK_SECRET
+        fromDatabase: false
+      - key: NEXT_PUBLIC_API_BASE_URL
+        fromDatabase: false
