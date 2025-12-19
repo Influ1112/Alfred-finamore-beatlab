@@ -1,0 +1,971 @@
+#!/usr/bin/env bash
+# Creates a local patch_root directory with the files for the PR.
+# After running this script:
+# 1) Create tar.gz: tar -czf /tmp/beatlab_patch.tar.gz -C patch_root .
+# 2) Base64 encode: base64 /tmp/beatlab_patch.tar.gz > /tmp/beatlab_patch.tar.gz.base64
+# 3) Copy the base64 contents into the PATCH_TARBALL repo secret.
+#
+# Run:
+#   chmod +x create_patch.sh
+#   ./create_patch.sh
+#
+set -euo pipefail
+
+ROOT_DIR="./patch_root"
+
+echo "Creating patch root at: $ROOT_DIR"
+rm -rf "$ROOT_DIR"
+mkdir -p "$ROOT_DIR"
+
+write_file() {
+  local path="$1"
+  local content="$2"
+  mkdir -p "$(dirname "$ROOT_DIR/$path")"
+  cat > "$ROOT_DIR/$path" <<'EOF'
+'"$content"'
+EOF
+}
+
+# We'll use here-docs below to write each file. For readability each file block uses its own cat <<'EOF' ... EOF.
+#
+# Files (content copied from what was prepared earlier)
+#
+
+mkdir -p "$ROOT_DIR/tools"
+cat > "$ROOT_DIR/tools/sync-assets.js" <<'EOF'
+/**
+ * Sync UI assets from packages/ui -> apps/web/public/ui-assets and apps/mobile/assets/ui-assets
+ *
+ * Usage:
+ *   node tools/sync-assets.js
+ *
+ * The script:
+ *  - Copies everything in packages/ui/* to:
+ *      - apps/web/public/ui-assets/
+ *      - apps/mobile/assets/ui-assets/
+ *  - Creates the destination directories if missing
+ *  - Overwrites existing files
+ */
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const root = path.resolve(__dirname, "..");
+const srcDir = path.join(root, "packages", "ui");
+const webDest = path.join(root, "apps", "web", "public", "ui-assets");
+const mobileDest = path.join(root, "apps", "mobile", "assets", "ui-assets");
+
+async function ensureDir(dir) {
+  await fs.promises.mkdir(dir, { recursive: true });
+}
+
+async function copyFile(src, dest) {
+  await ensureDir(path.dirname(dest));
+  await fs.promises.copyFile(src, dest);
+}
+
+async function copyDir(src, dest) {
+  await ensureDir(dest);
+  const entries = await fs.promises.readdir(src, { withFileTypes: true });
+  for (const entry of entries) {
+    const srcPath = path.join(src, entry.name);
+    const destPath = path.join(dest, entry.name);
+    if (entry.isDirectory()) {
+      await copyDir(srcPath, destPath);
+    } else if (entry.isFile()) {
+      await copyFile(srcPath, destPath);
+      console.log(`Copied: ${path.relative(root, srcPath)} -> ${path.relative(root, destPath)}`);
+    }
+  }
+}
+
+async function main() {
+  try {
+    const srcExists = fs.existsSync(srcDir);
+    if (!srcExists) {
+      console.error(`Source directory not found: ${srcDir}`);
+      process.exit(1);
+    }
+
+    console.log("Syncing UI assets...");
+    await copyDir(srcDir, webDest);
+    await copyDir(srcDir, mobileDest);
+    console.log("Done. Web assets ->", webDest);
+    console.log("Done. Mobile assets ->", mobileDest);
+  } catch (err) {
+    console.error("Asset sync failed:", err);
+    process.exit(1);
+  }
+}
+
+if (require.main === module) {
+  main();
+}
+EOF
+
+mkdir -p "$ROOT_DIR/backend/db"
+cat > "$ROOT_DIR/backend/db/index.js" <<'EOF'
+import { Pool } from "pg";
+
+export const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+});
+EOF
+
+mkdir -p "$ROOT_DIR/backend/models"
+cat > "$ROOT_DIR/backend/models/userModel.js" <<'EOF'
+import { pool } from "../db/index.js";
+
+/**
+ * Users table helper functions.
+ */
+
+export async function findUserById(id) {
+  if (!id) return null;
+  const { rows } = await pool.query(
+    `SELECT id::text AS id, email, is_premium, stripe_customer_id FROM users WHERE id::text = $1 LIMIT 1`,
+    [String(id)]
+  );
+  return rows[0] || null;
+}
+
+export async function findUserByEmail(email) {
+  if (!email) return null;
+  const { rows } = await pool.query(
+    `SELECT id::text AS id, email, is_premium, stripe_customer_id FROM users WHERE email = $1 LIMIT 1`,
+    [email]
+  );
+  return rows[0] || null;
+}
+
+export async function createUser({ email }) {
+  if (!email) throw new Error("email required");
+  const { rows } = await pool.query(
+    `INSERT INTO users (email, is_premium, created_at, updated_at)
+     VALUES ($1, $2, now(), now())
+     ON CONFLICT (email) DO UPDATE SET updated_at = now()
+     RETURNING id::text AS id, email, is_premium, stripe_customer_id`,
+    [email, false]
+  );
+  return rows[0];
+}
+
+export async function setUserPremium({ userId, email, isPremium }) {
+  if (!userId && !email) {
+    throw new Error("setUserPremium requires userId or email");
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    let user;
+    if (userId) {
+      const { rows } = await client.query(
+        `UPDATE users SET is_premium = $1, updated_at = now() WHERE id::text = $2 RETURNING id::text AS id, email, is_premium`,
+        [isPremium, String(userId)]
+      );
+      user = rows[0] || null;
+    } else {
+      const { rows } = await client.query(
+        `UPDATE users SET is_premium = $1, updated_at = now() WHERE email = $2 RETURNING id::text AS id, email, is_premium`,
+        [isPremium, email]
+      );
+      user = rows[0] || null;
+    }
+
+    await client.query("COMMIT");
+    return user;
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+export async function findUserByStripeCustomerId(customerId) {
+  if (!customerId) return null;
+  const { rows } = await pool.query(
+    `SELECT id::text AS id, email, is_premium, stripe_customer_id FROM users WHERE stripe_customer_id = $1 LIMIT 1`,
+    [customerId]
+  );
+  return rows[0] || null;
+}
+EOF
+
+cat > "$ROOT_DIR/backend/models/progressModel.js" <<'EOF'
+import { pool } from "../db/index.js";
+
+/**
+ * lesson_completions table schema:
+ * - id BIGSERIAL PRIMARY KEY
+ * - user_id UUID NOT NULL
+ * - lesson_id TEXT NOT NULL
+ * - completed_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+ *
+ * Unique constraint on (user_id, lesson_id)
+ */
+
+export async function markLessonCompleted(userId, lessonId) {
+  if (!userId || !lessonId) {
+    throw new Error("userId and lessonId required");
+  }
+  const q = `
+    INSERT INTO lesson_completions (user_id, lesson_id, completed_at)
+    VALUES ($1, $2, now())
+    ON CONFLICT (user_id, lesson_id) DO NOTHING
+    RETURNING id
+  `;
+  const { rows } = await pool.query(q, [userId, String(lessonId)]);
+  return rows.length > 0;
+}
+
+export async function getUserCompletedCount(userId) {
+  if (!userId) return 0;
+  const { rows } = await pool.query(
+    `SELECT COUNT(*)::int AS cnt FROM lesson_completions WHERE user_id = $1`,
+    [userId]
+  );
+  return rows[0]?.cnt ?? 0;
+}
+
+export async function hasUserCompletedLesson(userId, lessonId) {
+  if (!userId || !lessonId) return false;
+  const { rows } = await pool.query(
+    `SELECT 1 FROM lesson_completions WHERE user_id = $1 AND lesson_id = $2 LIMIT 1`,
+    [userId, String(lessonId)]
+  );
+  return rows.length > 0;
+}
+EOF
+
+cat > "$ROOT_DIR/backend/models/lessonModel.js" <<'EOF'
+import { pool } from "../db/index.js";
+
+/**
+ * Lessons storage in DB.
+ */
+
+export async function getAllLessons({ limit = 100, offset = 0 } = {}) {
+  const { rows } = await pool.query(
+    `SELECT id::text AS id, title, video_url, premium, thumbnail FROM lessons ORDER BY (id::int) ASC LIMIT $1 OFFSET $2`,
+    [limit, offset]
+  );
+  return rows;
+}
+
+export async function getLessonById(id) {
+  const { rows } = await pool.query(
+    `SELECT id::text AS id, title, video_url, premium, thumbnail, description FROM lessons WHERE id::text = $1 LIMIT 1`,
+    [String(id)]
+  );
+  return rows[0] || null;
+}
+
+export async function seedLessons(lessons) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    for (const l of lessons) {
+      await client.query(
+        `INSERT INTO lessons (id, title, video_url, premium, thumbnail, description)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (id) DO UPDATE SET title = EXCLUDED.title, video_url = EXCLUDED.video_url, premium = EXCLUDED.premium, thumbnail = EXCLUDED.thumbnail, description = EXCLUDED.description`,
+        [String(l.id), l.title, l.video_url || null, Boolean(l.premium), l.thumbnail || null, l.description || null]
+      );
+    }
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+EOF
+
+cat > "$ROOT_DIR/backend/models/webhookModel.js" <<'EOF'
+import { pool } from "../db/index.js";
+
+/**
+ * Persistence for processed Stripe event IDs.
+ */
+
+export async function eventAlreadyProcessed(eventId) {
+  if (!eventId) return false;
+  const { rows } = await pool.query(
+    `SELECT 1 FROM stripe_events WHERE event_id = $1 LIMIT 1`,
+    [eventId]
+  );
+  return rows.length > 0;
+}
+
+export async function markEventProcessed(eventId, rawEvent = null) {
+  if (!eventId) throw new Error("eventId required");
+  const q = `INSERT INTO stripe_events (event_id, payload, created_at) VALUES ($1, $2, now()) ON CONFLICT (event_id) DO NOTHING RETURNING event_id`;
+  const { rows } = await pool.query(q, [eventId, rawEvent ? JSON.stringify(rawEvent) : null]);
+  return rows.length > 0;
+}
+EOF
+
+mkdir -p "$ROOT_DIR/backend/middleware"
+cat > "$ROOT_DIR/backend/middleware/auth.js" <<'EOF'
+import jwt from "jsonwebtoken";
+
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  console.warn("Missing JWT_SECRET env var — auth will be permissive in dev");
+}
+
+/**
+ * authOptional - if Authorization header present, verify and set req.user.
+ * If missing or invalid, continue without user.
+ */
+export async function authOptional(req, res, next) {
+  const auth = req.headers.authorization;
+  if (!auth) return next();
+
+  const parts = auth.split(" ");
+  if (parts.length !== 2 || parts[0] !== "Bearer") {
+    return next();
+  }
+
+  try {
+    const payload = jwt.verify(parts[1], JWT_SECRET);
+    req.user = payload;
+  } catch (err) {
+    console.warn("Invalid JWT token:", err.message || err);
+  }
+  return next();
+}
+
+/**
+ * authRequired - require a valid bearer token and set req.user.
+ * Returns 401 if missing/invalid.
+ */
+export async function authRequired(req, res, next) {
+  const auth = req.headers.authorization;
+  if (!auth) {
+    return res.status(401).json({ error: "Missing Authorization header" });
+  }
+
+  const parts = auth.split(" ");
+  if (parts.length !== 2 || parts[0] !== "Bearer") {
+    return res.status(401).json({ error: "Malformed Authorization header" });
+  }
+
+  try {
+    const payload = jwt.verify(parts[1], JWT_SECRET);
+    req.user = payload;
+    return next();
+  } catch (err) {
+    return res.status(401).json({ error: "Invalid token" });
+  }
+}
+EOF
+
+cat > "$ROOT_DIR/backend/routes/auth.js" <<'EOF'
+import express from "express";
+import jwt from "jsonwebtoken";
+import { findUserByEmail, createUser, findUserById } from "../models/userModel.js";
+
+const router = express.Router();
+const JWT_SECRET = process.env.JWT_SECRET || "dev-secret";
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "30d";
+
+/**
+ * POST /auth/login
+ * Body: { email }
+ * - Creates user if not exists and returns a JWT (dev-only passwordless).
+ */
+router.post("/login", async (req, res) => {
+  try {
+    const { email } = req.body || {};
+    if (!email) return res.status(400).json({ error: "Missing email" });
+
+    let user = await findUserByEmail(email);
+    if (!user) {
+      user = await createUser({ email });
+    }
+
+    const tokenPayload = {
+      id: user.id,
+      email: user.email,
+      isPremium: Boolean(user.is_premium),
+    };
+
+    const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+
+    return res.json({ token, user: tokenPayload });
+  } catch (err) {
+    console.error("POST /auth/login error", err);
+    return res.status(500).json({ error: "Failed to login" });
+  }
+});
+
+/**
+ * GET /auth/me
+ * Requires Authorization header
+ */
+router.get("/me", async (req, res) => {
+  try {
+    const auth = req.headers.authorization;
+    if (!auth) return res.status(401).json({ error: "Missing Authorization header" });
+    const parts = auth.split(" ");
+    if (parts.length !== 2 || parts[0] !== "Bearer") return res.status(401).json({ error: "Malformed Authorization header" });
+
+    const payload = jwt.verify(parts[1], JWT_SECRET);
+    const user = await findUserById(payload.id);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    return res.json({ id: user.id, email: user.email, isPremium: user.is_premium });
+  } catch (err) {
+    console.error("GET /auth/me error", err);
+    return res.status(401).json({ error: "Invalid token" });
+  }
+});
+
+export default router;
+EOF
+
+cat > "$ROOT_DIR/backend/routes/lessons.js" <<'EOF'
+import express from "express";
+import { getAllLessons, getLessonById } from "../models/lessonModel.js";
+import { findUserById } from "../models/userModel.js";
+
+const router = express.Router();
+
+/**
+ * GET /lessons
+ */
+router.get("/", async (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 50));
+    const offset = (page - 1) * limit;
+
+    const rows = await getAllLessons({ limit, offset });
+
+    let isPremium = false;
+    if (req.user && req.user.id) {
+      const user = await findUserById(req.user.id);
+      if (user) isPremium = Boolean(user.is_premium);
+    } else if (String(req.query.premium) === "true") {
+      isPremium = true;
+    }
+
+    const data = rows.map((l) => ({
+      id: l.id,
+      title: l.title,
+      video_url: l.video_url,
+      premium: Boolean(l.premium),
+      thumbnail: l.thumbnail,
+      locked: Boolean(l.premium) && !isPremium,
+    }));
+
+    res.json({
+      data,
+      meta: { page, limit, total: data.length + offset },
+    });
+  } catch (err) {
+    console.error("GET /lessons error", err);
+    res.status(500).json({ error: "Failed to load lessons" });
+  }
+});
+
+/**
+ * GET /lessons/:id
+ */
+router.get("/:id", async (req, res) => {
+  try {
+    const id = req.params.id;
+    const lesson = await getLessonById(id);
+    if (!lesson) return res.status(404).json({ error: "Lesson not found" });
+
+    let isPremium = false;
+    if (req.user && req.user.id) {
+      const user = await findUserById(req.user.id);
+      if (user) isPremium = Boolean(user.is_premium);
+    } else if (String(req.query.premium) === "true") {
+      isPremium = true;
+    }
+
+    const locked = Boolean(lesson.premium) && !isPremium;
+
+    res.json({
+      id: lesson.id,
+      title: lesson.title,
+      video_url: lesson.video_url,
+      premium: Boolean(lesson.premium),
+      thumbnail: lesson.thumbnail,
+      description: lesson.description,
+      locked,
+      content: locked ? null : lesson.description,
+    });
+  } catch (err) {
+    console.error("GET /lessons/:id error", err);
+    res.status(500).json({ error: "Failed to load lesson" });
+  }
+});
+
+export default router;
+EOF
+
+cat > "$ROOT_DIR/backend/routes/progress.js" <<'EOF'
+import express from "express";
+import { markLessonCompleted, getUserCompletedCount } from "../models/progressModel.js";
+import { findUserById } from "../models/userModel.js";
+import { authRequired } from "../middleware/auth.js";
+
+const router = express.Router();
+
+router.use(authRequired);
+
+/**
+ * GET /progress
+ */
+router.get("/", async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const user = await findUserById(userId);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    const completed = await getUserCompletedCount(userId);
+    res.json({ completed });
+  } catch (err) {
+    console.error("GET /progress error", err);
+    res.status(500).json({ error: "Failed to fetch progress" });
+  }
+});
+
+/**
+ * POST /progress
+ */
+router.post("/", async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { lessonId } = req.body || {};
+    if (!lessonId) return res.status(400).json({ error: "Missing lessonId in body" });
+
+    await markLessonCompleted(userId, lessonId);
+    const completed = await getUserCompletedCount(userId);
+    res.status(201).json({ completed });
+  } catch (err) {
+    console.error("POST /progress error", err);
+    res.status(500).json({ error: "Failed to mark progress" });
+  }
+});
+
+export default router;
+EOF
+
+mkdir -p "$ROOT_DIR/backend/webhooks"
+cat > "$ROOT_DIR/backend/webhooks/stripeWebhook.js" <<'EOF'
+import Stripe from "stripe";
+import { findUserById, findUserByEmail, findUserByStripeCustomerId, setUserPremium } from "../models/userModel.js";
+import { eventAlreadyProcessed, markEventProcessed } from "../models/webhookModel.js";
+
+const stripeSecret = process.env.STRIPE_SECRET_KEY;
+const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+
+if (!stripeSecret) {
+  console.error("Missing STRIPE_SECRET_KEY");
+  throw new Error("Missing STRIPE_SECRET_KEY");
+}
+if (!webhookSecret) {
+  console.error("Missing STRIPE_WEBHOOK_SECRET");
+  throw new Error("Missing STRIPE_WEBHOOK_SECRET");
+}
+
+const stripe = new Stripe(stripeSecret, { apiVersion: "2023-08-16" });
+
+export default async function stripeWebhookHandler(req, res) {
+  const sig = req.headers["stripe-signature"];
+  if (!sig) {
+    return res.status(400).send("Missing stripe-signature header");
+  }
+
+  let event;
+  try {
+    event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
+  } catch (err) {
+    console.error("Invalid webhook signature:", err.message || err);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  try {
+    if (await eventAlreadyProcessed(event.id)) {
+      console.log(`Event ${event.id} already processed, skipping`);
+      return res.json({ received: true, skipped: true });
+    }
+  } catch (err) {
+    console.warn("Error checking processed event:", err);
+  }
+
+  try {
+    switch (event.type) {
+      case "checkout.session.completed": {
+        const session = event.data.object;
+        const userIdFromMetadata = session.metadata?.userId || session.client_reference_id || session.metadata?.client_reference_id;
+        let user = null;
+
+        if (userIdFromMetadata) {
+          user = await findUserById(userIdFromMetadata);
+        }
+
+        if (!user) {
+          const email = session.customer_email || session.customer_details?.email;
+          if (email) user = await findUserByEmail(email);
+        }
+
+        if (!user && session.customer) {
+          try {
+            const customer = await stripe.customers.retrieve(session.customer);
+            const custEmail = customer.email || customer.metadata?.userEmail || null;
+            if (custEmail) user = await findUserByEmail(custEmail);
+            if (!user && customer.metadata?.userId) {
+              user = await findUserById(customer.metadata.userId);
+            }
+          } catch (err) {
+            console.warn("Failed to retrieve Stripe customer", err);
+          }
+        }
+
+        if (user) {
+          await setUserPremium({ userId: user.id, isPremium: true });
+          console.log(`Unlocked premium for user ${user.id} (event ${event.id})`);
+        } else {
+          console.warn(`checkout.session.completed but user not found session=${session.id}`);
+        }
+        break;
+      }
+
+      case "customer.subscription.deleted": {
+        const subscription = event.data.object;
+        let user = null;
+        const customerId = subscription.customer;
+        if (customerId) {
+          user = await findUserByStripeCustomerId(customerId);
+          if (!user) {
+            try {
+              const customer = await stripe.customers.retrieve(customerId);
+              const custEmail = customer.email || customer.metadata?.userEmail || null;
+              if (custEmail) user = await findUserByEmail(custEmail);
+              if (!user && customer.metadata?.userId) user = await findUserById(customer.metadata.userId);
+            } catch (err) {
+              console.warn("Failed to retrieve Stripe customer for subscription.deleted", err);
+            }
+          }
+        }
+
+        if (user) {
+          await setUserPremium({ userId: user.id, isPremium: false });
+          console.log(`Revoked premium for user ${user.id} (subscription ${subscription.id})`);
+        } else {
+          console.warn(`subscription.deleted received but user not found subscription=${subscription.id}`);
+        }
+        break;
+      }
+
+      default:
+        console.log(`Unhandled event type ${event.type}`, { id: event.id });
+    }
+
+    try {
+      await markEventProcessed(event.id, event);
+    } catch (err) {
+      console.error("Failed to mark event processed:", err);
+    }
+
+    return res.json({ received: true });
+  } catch (err) {
+    console.error("Error processing webhook event:", err);
+    return res.status(500).send("Webhook handler error");
+  }
+}
+EOF
+
+mkdir -p "$ROOT_DIR/backend/scripts"
+cat > "$ROOT_DIR/backend/scripts/seed-test-user.js" <<'EOF'
+#!/usr/bin/env node
+import dotenv from "dotenv";
+dotenv.config();
+
+import { createUser, setUserPremium, findUserByEmail } from "../models/userModel.js";
+import jwt from "jsonwebtoken";
+import minimist from "minimist";
+
+async function main() {
+  const argv = minimist(process.argv.slice(2));
+  const email = argv.email || argv.e;
+  const isPremium = !!(argv.premium || argv.p);
+
+  if (!email) {
+    console.error("Usage: node backend/scripts/seed-test-user.js --email test@example.com [--premium]");
+    process.exit(1);
+  }
+
+  try {
+    console.log(`Seeding user: ${email} (premium=${isPremium})`);
+    let user = await findUserByEmail(email);
+    if (!user) {
+      user = await createUser({ email });
+      console.log("Created user:", user.id);
+    } else {
+      console.log("Found existing user:", user.id);
+    }
+
+    if (isPremium) {
+      await setUserPremium({ userId: user.id, isPremium: true });
+      console.log("Marked user as premium");
+    }
+
+    const JWT_SECRET = process.env.JWT_SECRET || "dev-secret";
+    const token = jwt.sign(
+      { id: user.id, email: user.email, isPremium: Boolean(isPremium) },
+      JWT_SECRET,
+      { expiresIn: "30d" }
+    );
+
+    console.log("");
+    console.log("=== Test token ===");
+    console.log(token);
+    console.log("==================");
+    console.log("");
+    console.log("Example curl (use in Authorization header):");
+    console.log(`curl -H "Authorization: Bearer ${token}" ${process.env.API_URL || "http://localhost:5000"}/progress`);
+    process.exit(0);
+  } catch (err) {
+    console.error("Failed to seed user:", err);
+    process.exit(1);
+  }
+}
+
+if (process.argv[1] && process.argv[1].endsWith("seed-test-user.js")) main();
+EOF
+
+mkdir -p "$ROOT_DIR/backend/migrations"
+cat > "$ROOT_DIR/backend/migrations/001-create-tables.sql" <<'EOF'
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+CREATE TABLE IF NOT EXISTS users (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  email TEXT UNIQUE,
+  is_premium BOOLEAN NOT NULL DEFAULT FALSE,
+  stripe_customer_id TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS stripe_events (
+  id BIGSERIAL PRIMARY KEY,
+  event_id TEXT NOT NULL UNIQUE,
+  payload JSONB,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+);
+EOF
+
+cat > "$ROOT_DIR/backend/migrations/002-create-lesson-completions.sql" <<'EOF'
+CREATE TABLE IF NOT EXISTS lesson_completions (
+  id BIGSERIAL PRIMARY KEY,
+  user_id UUID NOT NULL,
+  lesson_id TEXT NOT NULL,
+  completed_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+  UNIQUE (user_id, lesson_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_lesson_completions_user ON lesson_completions (user_id);
+EOF
+
+cat > "$ROOT_DIR/backend/migrations/003-create-lessons.sql" <<'EOF'
+CREATE TABLE IF NOT EXISTS lessons (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  video_url TEXT,
+  premium BOOLEAN NOT NULL DEFAULT FALSE,
+  thumbnail TEXT,
+  description TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_lessons_id ON lessons (id);
+EOF
+
+cat > "$ROOT_DIR/backend/migrations/004-seed-lessons.sql" <<'EOF'
+INSERT INTO lessons (id, title, video_url, premium, thumbnail, description)
+VALUES
+  ('1','Make Your First Beat','/videos/lesson1.mp4', false, '/thumbnails/lesson1.png', 'Step-by-step intro'),
+  ('2','Hi-Hats That Bounce','/videos/lesson2.mp4', true, '/thumbnails/lesson2.png', 'Advanced hi-hat programming'),
+  ('3','Simple Melody Formula','/videos/lesson3.mp4', true, '/thumbnails/lesson3.png', 'Create memorable melodies'),
+  ('4','Basic Mixing','/videos/lesson4.mp4', true, '/thumbnails/lesson4.png', 'Balance your mix'),
+  ('5','Finish the Beat','/videos/lesson5.mp4', true, '/thumbnails/lesson5.png', 'Arrangement & final touches')
+ON CONFLICT (id) DO UPDATE SET title = EXCLUDED.title, video_url = EXCLUDED.video_url, premium = EXCLUDED.premium, thumbnail = EXCLUDED.thumbnail, description = EXCLUDED.description;
+EOF
+
+cat > "$ROOT_DIR/backend/package.json" <<'EOF'
+{
+  "name": "beatlab-backend",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon --watch src --exec node src/index.js",
+    "migrate": "psql \"$DATABASE_URL\" -f backend/migrations/001-create-tables.sql && psql \"$DATABASE_URL\" -f backend/migrations/002-create-lesson-completions.sql && psql \"$DATABASE_URL\" -f backend/migrations/003-create-lessons.sql && psql \"$DATABASE_URL\" -f backend/migrations/004-seed-lessons.sql",
+    "seed:user": "node backend/scripts/seed-test-user.js --email test@example.com"
+  },
+  "dependencies": {
+    "dotenv": "^16.0.0",
+    "minimist": "^1.2.8",
+    "jsonwebtoken": "^9.0.0",
+    "pg": "^8.0.0",
+    "stripe": "^12.0.0",
+    "express": "^4.18.2",
+    "cors": "^2.8.5"
+  },
+  "devDependencies": {
+    "nodemon": "^2.0.0"
+  }
+}
+EOF
+
+cat > "$ROOT_DIR/backend/tsconfig.json" <<'EOF'
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "node",
+    "outDir": "dist",
+    "rootDir": "src",
+    "strict": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "backend/migrations", "backend/scripts"]
+}
+EOF
+
+mkdir -p "$ROOT_DIR/backend/src"
+cat > "$ROOT_DIR/backend/src/index.js" <<'EOF'
+import express from "express";
+import cors from "cors";
+import dotenv from "dotenv";
+import bodyParser from "body-parser";
+import authRoutes from "../routes/auth.js";
+import lessonsRoutes from "../routes/lessons.js";
+import progressRoutes from "../routes/progress.js";
+import stripeWebhookHandler from "../webhooks/stripeWebhook.js";
+import { authOptional } from "../middleware/auth.js";
+
+dotenv.config();
+
+const app = express();
+const PORT = process.env.PORT || 5000;
+
+app.use(
+  cors({
+    origin: (origin, cb) => {
+      const allowed = (process.env.CORS_ORIGINS || "").split(",").map(s => s.trim()).filter(Boolean);
+      if (!origin || allowed.length === 0 || allowed.includes(origin)) return cb(null, true);
+      return cb(new Error("CORS not allowed"), false);
+    },
+    credentials: true,
+  })
+);
+
+// For regular JSON routes use bodyParser.json()
+app.use(bodyParser.json());
+
+// Mount authentication-optional middleware to populate req.user if Authorization present
+app.use(authOptional);
+
+// Auth / API routes
+app.use("/auth", authRoutes);
+app.use("/lessons", lessonsRoutes);
+app.use("/progress", progressRoutes);
+
+// Stripe webhook: must use raw body for signature verification
+app.post("/webhook", express.raw({ type: "application/json" }), stripeWebhookHandler);
+
+// Health
+app.get("/health", (req, res) => res.json({ ok: true }));
+
+app.listen(PORT, () => {
+  console.log(`Backend listening on port ${PORT}`);
+});
+EOF
+
+mkdir -p "$ROOT_DIR/apps/web/lib"
+cat > "$ROOT_DIR/apps/web/lib/api.ts" <<'EOF'
+import axios from "axios";
+
+const BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:5000";
+
+const api = axios.create({
+  baseURL: BASE,
+  headers: {
+    "Content-Type": "application/json",
+  },
+});
+
+export function setAuthToken(token) {
+  if (typeof window === "undefined") return;
+  if (token) {
+    api.defaults.headers.common["Authorization"] = `Bearer ${token}`;
+    localStorage.setItem("beatlab_token", token);
+  } else {
+    delete api.defaults.headers.common["Authorization"];
+    localStorage.removeItem("beatlab_token");
+  }
+}
+
+export function loadAuthTokenFromStorage() {
+  try {
+    const t = typeof window !== "undefined" ? localStorage.getItem("beatlab_token") : null;
+    if (t) {
+      api.defaults.headers.common["Authorization"] = `Bearer ${t}`;
+      return t;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export default api;
+EOF
+
+cat > "$ROOT_DIR/apps/web/lib/auth.ts" <<'EOF'
+import api, { setAuthToken } from "./api";
+
+export async function login(email) {
+  const r = await api.post("/auth/login", { email });
+  const { token } = r.data || {};
+  if (token) {
+    setAuthToken(token);
+  }
+  return r.data;
+}
+
+export function logout() {
+  setAuthToken(null);
+}
+EOF
+
+mkdir -p "$ROOT_DIR/apps/web/components"
+cat > "$ROOT_DIR/apps/web/components/ProgressBar.tsx" <<'EOF'
+import React from "react";
+
+type Props = {
+  completed: number;
+  total: number;
+  height?: number;
+  color?: string;
+  backgroundColor?: string;
+  label?:
