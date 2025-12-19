@@ -1,0 +1,14 @@
+import api, { setAuthToken } from "./api";
+
+export async function login(email) {
+  const r = await api.post("/auth/login", { email });
+  const { token } = r.data || {};
+  if (token) {
+    setAuthToken(token);
+  }
+  return r.data;
+}
+
+export function logout() {
+  setAuthToken(null);
+}
