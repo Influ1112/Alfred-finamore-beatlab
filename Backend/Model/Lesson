@@ -1,0 +1,42 @@
+import { pool } from "../db/index.js";
+
+/**
+ * Lessons storage in DB.
+ */
+
+export async function getAllLessons({ limit = 100, offset = 0 } = {}) {
+  const { rows } = await pool.query(
+    `SELECT id::text AS id, title, video_url, premium, thumbnail FROM lessons ORDER BY (id::int) ASC LIMIT $1 OFFSET $2`,
+    [limit, offset]
+  );
+  return rows;
+}
+
+export async function getLessonById(id) {
+  const { rows } = await pool.query(
+    `SELECT id::text AS id, title, video_url, premium, thumbnail, description FROM lessons WHERE id::text = $1 LIMIT 1`,
+    [String(id)]
+  );
+  return rows[0] || null;
+}
+
+export async function seedLessons(lessons) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    for (const l of lessons) {
+      await client.query(
+        `INSERT INTO lessons (id, title, video_url, premium, thumbnail, description)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (id) DO UPDATE SET title = EXCLUDED.title, video_url = EXCLUDED.video_url, premium = EXCLUDED.premium, thumbnail = EXCLUDED.thumbnail, description = EXCLUDED.description`,
+        [String(l.id), l.title, l.video_url || null, Boolean(l.premium), l.thumbnail || null, l.description || null]
+      );
+    }
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
