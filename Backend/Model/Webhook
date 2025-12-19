@@ -1,0 +1,21 @@
+import { pool } from "../db/index.js";
+
+/**
+ * Persistence for processed Stripe event IDs.
+ */
+
+export async function eventAlreadyProcessed(eventId) {
+  if (!eventId) return false;
+  const { rows } = await pool.query(
+    `SELECT 1 FROM stripe_events WHERE event_id = $1 LIMIT 1`,
+    [eventId]
+  );
+  return rows.length > 0;
+}
+
+export async function markEventProcessed(eventId, rawEvent = null) {
+  if (!eventId) throw new Error("eventId required");
+  const q = `INSERT INTO stripe_events (event_id, payload, created_at) VALUES ($1, $2, now()) ON CONFLICT (event_id) DO NOTHING RETURNING event_id`;
+  const { rows } = await pool.query(q, [eventId, rawEvent ? JSON.stringify(rawEvent) : null]);
+  return rows.length > 0;
+}
