@@ -1,0 +1,45 @@
+import express from "express";
+import { markLessonCompleted, getUserCompletedCount } from "../models/progressModel.js";
+import { findUserById } from "../models/userModel.js";
+import { authRequired } from "../middleware/auth.js";
+
+const router = express.Router();
+
+router.use(authRequired);
+
+/**
+ * GET /progress
+ */
+router.get("/", async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const user = await findUserById(userId);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    const completed = await getUserCompletedCount(userId);
+    res.json({ completed });
+  } catch (err) {
+    console.error("GET /progress error", err);
+    res.status(500).json({ error: "Failed to fetch progress" });
+  }
+});
+
+/**
+ * POST /progress
+ */
+router.post("/", async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { lessonId } = req.body || {};
+    if (!lessonId) return res.status(400).json({ error: "Missing lessonId in body" });
+
+    await markLessonCompleted(userId, lessonId);
+    const completed = await getUserCompletedCount(userId);
+    res.status(201).json({ completed });
+  } catch (err) {
+    console.error("POST /progress error", err);
+    res.status(500).json({ error: "Failed to mark progress" });
+  }
+});
+
+export default router;
