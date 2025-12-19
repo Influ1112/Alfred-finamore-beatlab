@@ -1,0 +1,80 @@
+import express from "express";
+import { getAllLessons, getLessonById } from "../models/lessonModel.js";
+import { findUserById } from "../models/userModel.js";
+
+const router = express.Router();
+
+/**
+ * GET /lessons
+ */
+router.get("/", async (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 50));
+    const offset = (page - 1) * limit;
+
+    const rows = await getAllLessons({ limit, offset });
+
+    let isPremium = false;
+    if (req.user && req.user.id) {
+      const user = await findUserById(req.user.id);
+      if (user) isPremium = Boolean(user.is_premium);
+    } else if (String(req.query.premium) === "true") {
+      isPremium = true;
+    }
+
+    const data = rows.map((l) => ({
+      id: l.id,
+      title: l.title,
+      video_url: l.video_url,
+      premium: Boolean(l.premium),
+      thumbnail: l.thumbnail,
+      locked: Boolean(l.premium) && !isPremium,
+    }));
+
+    res.json({
+      data,
+      meta: { page, limit, total: data.length + offset },
+    });
+  } catch (err) {
+    console.error("GET /lessons error", err);
+    res.status(500).json({ error: "Failed to load lessons" });
+  }
+});
+
+/**
+ * GET /lessons/:id
+ */
+router.get("/:id", async (req, res) => {
+  try {
+    const id = req.params.id;
+    const lesson = await getLessonById(id);
+    if (!lesson) return res.status(404).json({ error: "Lesson not found" });
+
+    let isPremium = false;
+    if (req.user && req.user.id) {
+      const user = await findUserById(req.user.id);
+      if (user) isPremium = Boolean(user.is_premium);
+    } else if (String(req.query.premium) === "true") {
+      isPremium = true;
+    }
+
+    const locked = Boolean(lesson.premium) && !isPremium;
+
+    res.json({
+      id: lesson.id,
+      title: lesson.title,
+      video_url: lesson.video_url,
+      premium: Boolean(lesson.premium),
+      thumbnail: lesson.thumbnail,
+      description: lesson.description,
+      locked,
+      content: locked ? null : lesson.description,
+    });
+  } catch (err) {
+    console.error("GET /lessons/:id error", err);
+    res.status(500).json({ error: "Failed to load lesson" });
+  }
+});
+
+export default router;
