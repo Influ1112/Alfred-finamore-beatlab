@@ -1,0 +1,72 @@
+# Workflow to create a branch and PR from a base64 PATCH_TARBALL secret.
+name: Create PR from patch
+
+on:
+  workflow_dispatch:
+
+jobs:
+  create-pr:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y xz-utils rsync
+
+      - name: Decode patch tarball
+        env:
+          PATCH_TARBALL: ${{ secrets.PATCH_TARBALL }}
+        run: |
+          if [ -z "$PATCH_TARBALL" ]; then
+            echo "PATCH_TARBALL secret is missing or empty"
+            exit 1
+          fi
+          echo "$PATCH_TARBALL" | base64 -d > /tmp/patch.tar.gz
+          tar -tzf /tmp/patch.tar.gz || (echo "patch archive appears invalid" && exit 1)
+          mkdir -p /tmp/patch_extract
+          tar -xzf /tmp/patch.tar.gz -C /tmp/patch_extract
+
+      - name: Create branch
+        run: |
+          BRANCH=feature/deploy-setup
+          git checkout -b $BRANCH
+          echo "Created branch $BRANCH"
+
+      - name: Copy patch files into repo
+        working-directory: ${{ github.workspace }}
+        run: |
+          rsync -av --exclude='.git' /tmp/patch_extract/ ./
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes detected in patch; exiting"
+            exit 0
+          fi
+          git commit -m "feat: add auth, lessons & progress, seed script, mobile auth + CI/deploy" || true
+
+      - name: Push branch using bot token
+        env:
+          DEPLOY_BOT_PAT: ${{ secrets.DEPLOY_BOT_PAT }}
+          REPO: ${{ github.repository }}
+        run: |
+          BRANCH=feature/deploy-setup
+          git remote set-url origin https://x-access-token:${DEPLOY_BOT_PAT}@github.com/${REPO}.git
+          git push --set-upstream origin $BRANCH -f
+
+      - name: Create Pull Request
+        env:
+          DEPLOY_BOT_PAT: ${{ secrets.DEPLOY_BOT_PAT }}
+          REPO: ${{ github.repository }}
+        run: |
+          BRANCH=feature/deploy-setup
+          PR_TITLE="feat: add auth, lessons & progress, seed script, mobile auth + CI/deploy"
+          PR_BODY="Automated patch"
+          RESPONSE=$(curl -s -X POST -H "Authorization: token ${DEPLOY_BOT_PAT}" -H "Accept: application/vnd.github+json" https://api.github.com/repos/${REPO}/pulls -d "{\"title\":\"${PR_TITLE}\",\"head\":\"${BRANCH}\",\"base\":\"main\",\"body\":\"${PR_BODY}\"}")
+          echo "$RESPONSE" > /tmp/pr_response.json
+          jq . /tmp/pr_response.json || true
