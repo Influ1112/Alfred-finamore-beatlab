@@ -1,0 +1,8 @@
+INSERT INTO lessons (id, title, video_url, premium, thumbnail, description)
+VALUES
+  ('1','Make Your First Beat','/videos/lesson1.mp4', false, '/thumbnails/lesson1.png', 'Step-by-step intro'),
+  ('2','Hi-Hats That Bounce','/videos/lesson2.mp4', true, '/thumbnails/lesson2.png', 'Advanced hi-hat programming'),
+  ('3','Simple Melody Formula','/videos/lesson3.mp4', true, '/thumbnails/lesson3.png', 'Create memorable melodies'),
+  ('4','Basic Mixing','/videos/lesson4.mp4', true, '/thumbnails/lesson4.png', 'Balance your mix'),
+  ('5','Finish the Beat','/videos/lesson5.mp4', true, '/thumbnails/lesson5.png', 'Arrangement & final touches')
+ON CONFLICT (id) DO UPDATE SET title = EXCLUDED.title, video_url = EXCLUDED.video_url, premium = EXCLUDED.premium, thumbnail = EXCLUDED.thumbnail, description = EXCLUDED.description;
