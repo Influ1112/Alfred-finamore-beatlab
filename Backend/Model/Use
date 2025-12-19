@@ -1,0 +1,78 @@
+import { pool } from "../db/index.js";
+
+/**
+ * Users table helper functions.
+ */
+
+export async function findUserById(id) {
+  if (!id) return null;
+  const { rows } = await pool.query(
+    `SELECT id::text AS id, email, is_premium, stripe_customer_id FROM users WHERE id::text = $1 LIMIT 1`,
+    [String(id)]
+  );
+  return rows[0] || null;
+}
+
+export async function findUserByEmail(email) {
+  if (!email) return null;
+  const { rows } = await pool.query(
+    `SELECT id::text AS id, email, is_premium, stripe_customer_id FROM users WHERE email = $1 LIMIT 1`,
+    [email]
+  );
+  return rows[0] || null;
+}
+
+export async function createUser({ email }) {
+  if (!email) throw new Error("email required");
+  const { rows } = await pool.query(
+    `INSERT INTO users (email, is_premium, created_at, updated_at)
+     VALUES ($1, $2, now(), now())
+     ON CONFLICT (email) DO UPDATE SET updated_at = now()
+     RETURNING id::text AS id, email, is_premium, stripe_customer_id`,
+    [email, false]
+  );
+  return rows[0];
+}
+
+export async function setUserPremium({ userId, email, isPremium }) {
+  if (!userId && !email) {
+    throw new Error("setUserPremium requires userId or email");
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    let user;
+    if (userId) {
+      const { rows } = await client.query(
+        `UPDATE users SET is_premium = $1, updated_at = now() WHERE id::text = $2 RETURNING id::text AS id, email, is_premium`,
+        [isPremium, String(userId)]
+      );
+      user = rows[0] || null;
+    } else {
+      const { rows } = await client.query(
+        `UPDATE users SET is_premium = $1, updated_at = now() WHERE email = $2 RETURNING id::text AS id, email, is_premium`,
+        [isPremium, email]
+      );
+      user = rows[0] || null;
+    }
+
+    await client.query("COMMIT");
+    return user;
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+export async function findUserByStripeCustomerId(customerId) {
+  if (!customerId) return null;
+  const { rows } = await pool.query(
+    `SELECT id::text AS id, email, is_premium, stripe_customer_id FROM users WHERE stripe_customer_id = $1 LIMIT 1`,
+    [customerId]
+  );
+  return rows[0] || null;
+}
