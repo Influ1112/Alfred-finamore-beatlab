@@ -1,0 +1,22 @@
+# Simple Dockerfile for the backend (Express + Node)
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Install dependencies
+COPY backend/package.json backend/package-lock.json* ./
+RUN npm ci --production
+
+# Copy app source
+COPY backend/src ./src
+COPY backend/routes ./routes
+COPY backend/models ./models
+COPY backend/middleware ./middleware
+COPY backend/webhooks ./webhooks
+
+ENV NODE_ENV=production
+ENV PORT=5000
+
+EXPOSE 5000
+
+CMD ["node", "src/index.js"]
