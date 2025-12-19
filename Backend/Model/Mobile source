@@ -1,0 +1,59 @@
+import React, { useEffect, useRef } from "react";
+import { View, ActivityIndicator, StyleSheet } from "react-native";
+import { WebView } from "react-native-webview";
+import * as Linking from "expo-linking";
+import * as SecureStore from "expo-secure-store";
+
+/**
+ * Web login flow for mobile. The web app should redirect after login to:
+ *   beatlab://auth-callback?token=...
+ *
+ * Configure app.json to register the scheme "beatlab".
+ */
+const LOGIN_URL = "https://yourwebapp.com/login?mobile=1";
+const CALLBACK_SCHEME = "beatlab://auth-callback";
+
+export default function AuthWebView({ navigation }) {
+  const webRef = useRef(null);
+
+  useEffect(() => {
+    const listener = Linking.addEventListener("url", handleDeepLink);
+    return () => listener.remove();
+  }, []);
+
+  const handleDeepLink = async ({ url }) => {
+    try {
+      const parsed = Linking.parse(url);
+      if (parsed.path === "auth-callback" && parsed.queryParams?.token) {
+        const token = parsed.queryParams.token;
+        await SecureStore.setItemAsync("beatlab_token", token);
+        navigation.replace("Home");
+      }
+    } catch (err) {
+      console.warn("Failed to handle deep link", err);
+    }
+  };
+
+  const onNavigationStateChange = (navState) => {
+    const url = navState.url;
+    if (url && url.startsWith("beatlab://")) {
+      Linking.openURL(url).catch(() => {});
+    }
+  };
+
+  return (
+    <View style={styles.container}>
+      <WebView
+        source={{ uri: LOGIN_URL }}
+        ref={webRef}
+        onNavigationStateChange={onNavigationStateChange}
+        startInLoadingState
+        renderLoading={() => <ActivityIndicator size="large" />}
+      />
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: "#fff" },
+});
