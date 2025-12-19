@@ -1,0 +1,12 @@
+CREATE TABLE IF NOT EXISTS lessons (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  video_url TEXT,
+  premium BOOLEAN NOT NULL DEFAULT FALSE,
+  thumbnail TEXT,
+  description TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_lessons_id ON lessons (id);
