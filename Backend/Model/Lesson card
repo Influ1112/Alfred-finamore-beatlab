@@ -1,0 +1,96 @@
+import React from "react";
+import Image from "next/image";
+import { useRouter } from "next/router";
+
+export type Lesson = {
+  id: number | string;
+  title: string;
+  video_url?: string;
+  premium?: boolean;
+  locked?: boolean;
+  thumbnail?: string;
+};
+
+type Props = {
+  lesson: Lesson;
+  onStart?: (lesson: Lesson) => void;
+};
+
+export default function LessonCard({ lesson, onStart }: Props) {
+  const router = useRouter();
+
+  const handleStart = () => {
+    if (lesson.locked) {
+      router.push("/subscribe");
+      return;
+    }
+    if (onStart) {
+      onStart(lesson);
+    } else {
+      router.push(`/lessons/${lesson.id}`);
+    }
+  };
+
+  const thumbnailSrc = lesson.thumbnail ?? `/thumbnails/lesson${lesson.id}.png`;
+  const fallbackSrc = "/ui-assets/locked.png";
+
+  return (
+    <div style={{
+      display: "flex",
+      gap: 12,
+      alignItems: "center",
+      marginBottom: 20,
+      padding: 12,
+      borderRadius: 8,
+      background: "#fff",
+      boxShadow: "0 1px 3px rgba(0,0,0,0.06)"
+    }}>
+      <div style={{ width: 160, height: 90, position: "relative", flex: "0 0 160px", borderRadius: 6, overflow: "hidden", background: "#000" }}>
+        <Image
+          src={thumbnailSrc}
+          alt={lesson.title}
+          layout="fill"
+          objectFit="cover"
+          loading="lazy"
+        />
+      </div>
+
+      <div style={{ flex: 1 }}>
+        <h3 style={{ margin: 0, fontSize: 16 }}>{lesson.title}</h3>
+        <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center" }}>
+          {lesson.locked ? (
+            <button
+              onClick={handleStart}
+              style={{
+                background: "#eee",
+                border: "none",
+                padding: "8px 12px",
+                borderRadius: 6,
+                cursor: "pointer"
+              }}
+            >
+              🔒 Locked
+            </button>
+          ) : (
+            <button
+              onClick={handleStart}
+              style={{
+                background: "#7C5CFF",
+                color: "#fff",
+                border: "none",
+                padding: "8px 12px",
+                borderRadius: 6,
+                cursor: "pointer"
+              }}
+            >
+              Start Lesson
+            </button>
+          )}
+          <span style={{ color: "#777", fontSize: 13 }}>
+            {lesson.premium ? "Premium" : "Free"}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
