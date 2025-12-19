@@ -1,0 +1,122 @@
+import Stripe from "stripe";
+import { findUserById, findUserByEmail, findUserByStripeCustomerId, setUserPremium } from "../models/userModel.js";
+import { eventAlreadyProcessed, markEventProcessed } from "../models/webhookModel.js";
+
+const stripeSecret = process.env.STRIPE_SECRET_KEY;
+const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+
+if (!stripeSecret) {
+  console.error("Missing STRIPE_SECRET_KEY");
+  throw new Error("Missing STRIPE_SECRET_KEY");
+}
+if (!webhookSecret) {
+  console.error("Missing STRIPE_WEBHOOK_SECRET");
+  throw new Error("Missing STRIPE_WEBHOOK_SECRET");
+}
+
+const stripe = new Stripe(stripeSecret, { apiVersion: "2023-08-16" });
+
+export default async function stripeWebhookHandler(req, res) {
+  const sig = req.headers["stripe-signature"];
+  if (!sig) {
+    return res.status(400).send("Missing stripe-signature header");
+  }
+
+  let event;
+  try {
+    event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
+  } catch (err) {
+    console.error("Invalid webhook signature:", err.message || err);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  try {
+    if (await eventAlreadyProcessed(event.id)) {
+      console.log(`Event ${event.id} already processed, skipping`);
+      return res.json({ received: true, skipped: true });
+    }
+  } catch (err) {
+    console.warn("Error checking processed event:", err);
+  }
+
+  try {
+    switch (event.type) {
+      case "checkout.session.completed": {
+        const session = event.data.object;
+        const userIdFromMetadata = session.metadata?.userId || session.client_reference_id || session.metadata?.client_reference_id;
+        let user = null;
+
+        if (userIdFromMetadata) {
+          user = await findUserById(userIdFromMetadata);
+        }
+
+        if (!user) {
+          const email = session.customer_email || session.customer_details?.email;
+          if (email) user = await findUserByEmail(email);
+        }
+
+        if (!user && session.customer) {
+          try {
+            const customer = await stripe.customers.retrieve(session.customer);
+            const custEmail = customer.email || customer.metadata?.userEmail || null;
+            if (custEmail) user = await findUserByEmail(custEmail);
+            if (!user && customer.metadata?.userId) {
+              user = await findUserById(customer.metadata.userId);
+            }
+          } catch (err) {
+            console.warn("Failed to retrieve Stripe customer", err);
+          }
+        }
+
+        if (user) {
+          await setUserPremium({ userId: user.id, isPremium: true });
+          console.log(`Unlocked premium for user ${user.id} (event ${event.id})`);
+        } else {
+          console.warn(`checkout.session.completed but user not found session=${session.id}`);
+        }
+        break;
+      }
+
+      case "customer.subscription.deleted": {
+        const subscription = event.data.object;
+        let user = null;
+        const customerId = subscription.customer;
+        if (customerId) {
+          user = await findUserByStripeCustomerId(customerId);
+          if (!user) {
+            try {
+              const customer = await stripe.customers.retrieve(customerId);
+              const custEmail = customer.email || customer.metadata?.userEmail || null;
+              if (custEmail) user = await findUserByEmail(custEmail);
+              if (!user && customer.metadata?.userId) user = await findUserById(customer.metadata.userId);
+            } catch (err) {
+              console.warn("Failed to retrieve Stripe customer for subscription.deleted", err);
+            }
+          }
+        }
+
+        if (user) {
+          await setUserPremium({ userId: user.id, isPremium: false });
+          console.log(`Revoked premium for user ${user.id} (subscription ${subscription.id})`);
+        } else {
+          console.warn(`subscription.deleted received but user not found subscription=${subscription.id}`);
+        }
+        break;
+      }
+
+      default:
+        console.log(`Unhandled event type ${event.type}`, { id: event.id });
+    }
+
+    try {
+      await markEventProcessed(event.id, event);
+    } catch (err) {
+      console.error("Failed to mark event processed:", err);
+    }
+
+    return res.json({ received: true });
+  } catch (err) {
+    console.error("Error processing webhook event:", err);
+    return res.status(500).send("Webhook handler error");
+  }
+}see 
