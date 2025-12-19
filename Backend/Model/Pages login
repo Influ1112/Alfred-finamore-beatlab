@@ -1,0 +1,54 @@
+import React, { useState } from "react";
+import { useRouter } from "next/router";
+import { login } from "../lib/auth";
+import { loadAuthTokenFromStorage } from "../lib/api";
+
+export default function LoginPage() {
+  const router = useRouter();
+  const [email, setEmail] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  React.useEffect(() => {
+    const t = loadAuthTokenFromStorage();
+    if (t) router.replace("/lessons");
+  }, []);
+
+  const onSubmit = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
+    try {
+      await login(email);
+      router.push("/lessons");
+    } catch (err) {
+      console.error(err);
+      setError("Login failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <main style={{ padding: 40 }}>
+      <h1>Sign in / Create account</h1>
+      <p>Enter your email to sign in for testing. In production replace with secure auth.</p>
+      <form onSubmit={onSubmit}>
+        <input
+          placeholder="you@example.com"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          type="email"
+          required
+          style={{ padding: 8, fontSize: 16, width: 320 }}
+        />
+        <div style={{ marginTop: 12 }}>
+          <button type="submit" disabled={loading} style={{ padding: "8px 12px" }}>
+            {loading ? "Signing in…" : "Sign in"}
+          </button>
+        </div>
+        {error && <div style={{ color: "red", marginTop: 8 }}>{error}</div>}
+      </form>
+    </main>
+  );
+}
