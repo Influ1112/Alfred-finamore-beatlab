@@ -1,0 +1,82 @@
+Deployment & CI - Quick Reference
+
+This repository includes GitHub Actions workflows to deploy the web (Vercel), backend (Render), and trigger Expo EAS mobile builds.
+
+Required repository secrets (add in Settings → Secrets and variables → Actions):
+
+Core runtime / infra:
+- DATABASE_URL
+- JWT_SECRET
+- NEXT_PUBLIC_API_BASE_URL  (e.g. https://api.yourdomain.com)
+- STRIPE_SECRET_KEY
+- STRIPE_WEBHOOK_SECRET
+- STRIPE_PRICE_ID
+
+For automated PR creation (already used in current flow):
+- DEPLOY_BOT_PAT
+- PATCH_TARBALL
+
+Vercel (web) deploy:
+- VERCEL_TOKEN
+- VERCEL_ORG_ID
+- VERCEL_PROJECT_ID
+
+Render (backend) deploy:
+- RENDER_API_KEY
+- RENDER_SERVICE_ID
+
+Expo / EAS (mobile) build:
+- EXPO_TOKEN
+- For iOS automatic submission you will also need App Store Connect credentials (API Key) in EAS/EAS credentials.
+
+How the workflows work
+- .github/workflows/deploy-web-vercel.yml
+  - On push to main: builds apps/web and deploys to Vercel using the Vercel Action.
+  - Requires VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID.
+
+- .github/workflows/deploy-backend-render.yml
+  - On push to main: triggers a Render deploy by POSTing to Render API using RENDER_API_KEY and RENDER_SERVICE_ID.
+  - Your Render service must be configured (build or Docker) to run migrations and start the app.
+
+- .github/workflows/mobile-eas-build.yml
+  - Can be triggered manually or on push to main: logs into Expo with EXPO_TOKEN and triggers EAS builds for Android and iOS.
+  - EAS builds require project configuration and credentials saved in Expo (see Expo docs).
+
+Post-merge manual steps (recommended)
+1) Create / configure Vercel project:
+   - Connect the repository to Vercel.
+   - Set Environment Variables on Vercel: NEXT_PUBLIC_API_BASE_URL (and any runtime secrets).
+   - Note: If you use the Vercel GitHub integration, you may not need VERCEL_TOKEN-based deploys; Vercel will auto-deploy on push.
+
+2) Create / configure Render service:
+   - Create a new Web Service on Render for the backend (specify branch main).
+   - Use the Dockerfile in backend/Dockerfile or let Render build from source (Node).
+   - Configure environment variables (DATABASE_URL, JWT_SECRET, STRIPE_*)
+   - If you want migrations to run automatically, add a deploy hook or migration command in Render's settings.
+
+3) Expo & EAS:
+   - Configure your Expo project (apps/mobile) with eas.json and credentials.
+   - Add EXPO_TOKEN as a secret.
+   - Use EAS dashboard to inspect builds and download artifacts.
+
+Migrations & seeding (run once)
+Run migrations and seeds to create DB tables and initial lessons:
+psql "$DATABASE_URL" -f backend/migrations/001-create-tables.sql
+psql "$DATABASE_URL" -f backend/migrations/002-create-lesson-completions.sql
+psql "$DATABASE_URL" -f backend/migrations/003-create-lessons.sql
+psql "$DATABASE_URL" -f backend/migrations/004-seed-lessons.sql
+
+Seed a test user and obtain a JWT:
+node backend/scripts/seed-test-user.js --email test@example.com
+
+Security notes
+- Use fine-grained GitHub tokens where possible and set expirations.
+- Rotate tokens once CI work is complete or if you suspect exposure.
+- Do not paste secrets in chat.
+
+If you want, I can produce:
+- A Render service manifest (render.yaml) to ease Render creation
+- Vercel settings JSON to preconfigure environment variables for Vercel CLI
+- An EAS workflow that downloads built artifacts and uploads them to GitHub Releases
+
+Tell me which of those (Render manifest, Vercel config, EAS artifact upload) you'd like next and I will add them to the patch.
