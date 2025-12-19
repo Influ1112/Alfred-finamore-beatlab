@@ -1,0 +1,5 @@
+{
+  "scripts": {
+    "sync:assets": "node tools/sync-assets.js"
+  }
+}
