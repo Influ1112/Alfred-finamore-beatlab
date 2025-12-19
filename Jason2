@@ -1,0 +1,27 @@
+{
+  "cli": {
+    "version": ">= 3.0.0"
+  },
+  "build": {
+    "production": {
+      "releaseChannel": "production",
+      "workflow": "managed",
+      "android": {
+        "buildType": "app-bundle"
+      },
+      "ios": {
+        "simulator": false
+      }
+    },
+    "development": {
+      "releaseChannel": "staging",
+      "workflow": "managed",
+      "android": {
+        "buildType": "apk"
+      },
+      "ios": {
+        "simulator": true
+      }
+    }
+  }
+}
