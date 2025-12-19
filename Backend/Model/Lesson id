@@ -1,0 +1,61 @@
+import React from "react";
+import { useRouter } from "next/router";
+import Link from "next/link";
+
+const LESSONS = [
+  { id: "1", title: "Make Your First Beat", video_url: "/videos/lesson1.mp4", premium: false, description: "Step-by-step intro" },
+  { id: "2", title: "Hi-Hats That Bounce", video_url: "/videos/lesson2.mp4", premium: true, description: "Advanced hi-hat programming" },
+  { id: "3", title: "Simple Melody Formula", video_url: "/videos/lesson3.mp4", premium: true, description: "Create memorable melodies" },
+  { id: "4", title: "Basic Mixing", video_url: "/videos/lesson4.mp4", premium: true, description: "Balance your mix" },
+  { id: "5", title: "Finish the Beat", video_url: "/videos/lesson5.mp4", premium: true, description: "Arrangement & final touches" },
+];
+
+export default function LessonPlayer() {
+  const router = useRouter();
+  const { id, premium } = router.query;
+  const isPremium = String(premium) === "true";
+
+  const lesson = LESSONS.find(l => String(l.id) === String(id));
+
+  if (!lesson) {
+    return (
+      <main style={{ padding: 40 }}>
+        <p>Lesson not found.</p>
+        <Link href="/lessons">Back to lessons</Link>
+      </main>
+    );
+  }
+
+  const locked = Boolean(lesson.premium) && !isPremium;
+
+  return (
+    <main style={{ padding: 40 }}>
+      <h1 style={{ marginTop: 0 }}>{lesson.title}</h1>
+      <p>{lesson.description}</p>
+
+      {locked ? (
+        <div style={{ padding: 20, borderRadius: 8, background: "#fff6f6" }}>
+          <p>This lesson is part of the premium plan.</p>
+          <Link href="/subscribe"><a>
+            <button style={{ background: "#ff6b6b", color: "#fff", border: "none", padding: "10px 14px", borderRadius: 6 }}>
+              Unlock Premium
+            </button>
+          </a></Link>
+        </div>
+      ) : (
+        <div style={{ marginTop: 16 }}>
+          <video
+            controls
+            width="100%"
+            style={{ maxWidth: 960, borderRadius: 8, background: "#000" }}
+            src={lesson.video_url}
+          />
+        </div>
+      )}
+
+      <div style={{ marginTop: 24 }}>
+        <Link href="/lessons">← Back to lessons</Link>
+      </div>
+    </main>
+  );
+}
