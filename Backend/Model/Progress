@@ -1,0 +1,43 @@
+import { pool } from "../db/index.js";
+
+/**
+ * lesson_completions table schema:
+ * - id BIGSERIAL PRIMARY KEY
+ * - user_id UUID NOT NULL
+ * - lesson_id TEXT NOT NULL
+ * - completed_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+ *
+ * Unique constraint on (user_id, lesson_id)
+ */
+
+export async function markLessonCompleted(userId, lessonId) {
+  if (!userId || !lessonId) {
+    throw new Error("userId and lessonId required");
+  }
+  const q = `
+    INSERT INTO lesson_completions (user_id, lesson_id, completed_at)
+    VALUES ($1, $2, now())
+    ON CONFLICT (user_id, lesson_id) DO NOTHING
+    RETURNING id
+  `;
+  const { rows } = await pool.query(q, [userId, String(lessonId)]);
+  return rows.length > 0;
+}
+
+export async function getUserCompletedCount(userId) {
+  if (!userId) return 0;
+  const { rows } = await pool.query(
+    `SELECT COUNT(*)::int AS cnt FROM lesson_completions WHERE user_id = $1`,
+    [userId]
+  );
+  return rows[0]?.cnt ?? 0;
+}
+
+export async function hasUserCompletedLesson(userId, lessonId) {
+  if (!userId || !lessonId) return false;
+  const { rows } = await pool.query(
+    `SELECT 1 FROM lesson_completions WHERE user_id = $1 AND lesson_id = $2 LIMIT 1`,
+    [userId, String(lessonId)]
+  );
+  return rows.length > 0;
+}
