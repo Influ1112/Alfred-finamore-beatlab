@@ -1,0 +1,118 @@
+name: Mobile EAS Build & Upload
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  eas-build-and-upload:
+    runs-on: ubuntu-latest
+    env:
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install CLI tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Install eas-cli
+        run: npm install -g eas-cli@3.x
+
+      - name: Login to Expo (non-interactive)
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          if [ -z "${EXPO_TOKEN}" ]; then
+            echo "EXPO_TOKEN secret is missing" && exit 1
+          fi
+          eas login --token "${EXPO_TOKEN}"
+
+      - name: Create artifacts dir
+        run: mkdir -p ./artifacts/android ./artifacts/ios
+
+      - name: Trigger Android build and wait
+        working-directory: apps/mobile
+        id: android_build
+        run: |
+          set -e
+          echo "Starting Android EAS build (production profile)..."
+          out=$(eas build --platform android --profile production --non-interactive --wait --json) || { echo "eas build failed"; echo "$out"; exit 1; }
+          echo "$out" > /tmp/android_build.json
+          echo "::set-output name=json::$(cat /tmp/android_build.json | jq -c '.')"
+          BUILD_ID=$(cat /tmp/android_build.json | jq -r '.id')
+          echo "Android build id: $BUILD_ID"
+          # Download artifact
+          echo "Downloading Android artifact..."
+          eas build:download --id "$BUILD_ID" --platform android --output ../../artifacts/android || echo "Android download may have failed"
+
+      - name: Trigger iOS build and wait
+        working-directory: apps/mobile
+        id: ios_build
+        run: |
+          set -e
+          echo "Starting iOS EAS build (production profile)..."
+          out=$(eas build --platform ios --profile production --non-interactive --wait --json) || { echo "eas build failed"; echo "$out"; exit 1; }
+          echo "$out" > /tmp/ios_build.json
+          echo "::set-output name=json::$(cat /tmp/ios_build.json | jq -c '.')"
+          BUILD_ID=$(cat /tmp/ios_build.json | jq -r '.id')
+          echo "iOS build id: $BUILD_ID"
+          # Download artifact
+          echo "Downloading iOS artifact..."
+          eas build:download --id "$BUILD_ID" --platform ios --output ../../artifacts/ios || echo "iOS download may have failed"
+
+      - name: List artifacts
+        run: |
+          echo "Artifacts:"
+          ls -la artifacts || true
+          find artifacts -type f -maxdepth 3 -print || true
+
+      - name: Create draft GitHub release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: eas-build-${{ github.run_id }}
+          release_name: EAS builds ${{ github.run_id }}
+          body: "Automated EAS builds for run ${{ github.run_id }} - artifacts attached"
+          draft: true
+          prerelease: false
+
+      - name: Upload Android artifact (if present)
+        if: always()
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./artifacts/android
+          asset_name: android-artifacts-${{ github.run_id }}.zip
+          asset_content_type: application/zip
+
+      - name: Upload iOS artifact (if present)
+        if: always()
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./artifacts/ios
+          asset_name: ios-artifacts-${{ github.run_id }}.zip
+          asset_content_type: application/zip
+
+      - name: Note about artifact upload
+        run: |
+          echo "Build + upload steps finished. Check the draft release for artifacts."
