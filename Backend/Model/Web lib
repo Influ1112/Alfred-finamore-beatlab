@@ -1,0 +1,36 @@
+import axios from "axios";
+
+const BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:5000";
+
+const api = axios.create({
+  baseURL: BASE,
+  headers: {
+    "Content-Type": "application/json",
+  },
+});
+
+export function setAuthToken(token) {
+  if (typeof window === "undefined") return;
+  if (token) {
+    api.defaults.headers.common["Authorization"] = `Bearer ${token}`;
+    localStorage.setItem("beatlab_token", token);
+  } else {
+    delete api.defaults.headers.common["Authorization"];
+    localStorage.removeItem("beatlab_token");
+  }
+}
+
+export function loadAuthTokenFromStorage() {
+  try {
+    const t = typeof window !== "undefined" ? localStorage.getItem("beatlab_token") : null;
+    if (t) {
+      api.defaults.headers.common["Authorization"] = `Bearer ${t}`;
+      return t;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export default api;
