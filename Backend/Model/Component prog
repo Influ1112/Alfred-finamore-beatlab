@@ -1,0 +1,52 @@
+import React from "react";
+
+type Props = {
+  completed: number;
+  total: number;
+  height?: number;
+  color?: string;
+  backgroundColor?: string;
+  label?: boolean;
+};
+
+export default function ProgressBar({
+  completed,
+  total,
+  height = 16,
+  color = "#7C5CFF",
+  backgroundColor = "#eee",
+  label = true,
+}: Props) {
+  const percent = total > 0 ? Math.max(0, Math.min(100, (completed / total) * 100)) : 0;
+  return (
+    <div
+      role="progressbar"
+      aria-valuemin={0}
+      aria-valuemax={total}
+      aria-valuenow={completed}
+      style={{
+        background: backgroundColor,
+        height,
+        borderRadius: height / 2,
+        overflow: "hidden",
+        display: "flex",
+        alignItems: "center",
+      }}
+    >
+      <div
+        style={{
+          width: `${percent}%`,
+          height: "100%",
+          background: color,
+          borderRadius: height / 2,
+          transition: "width 300ms ease",
+        }}
+      />
+      {label && (
+        <div style={{ marginLeft: 8, fontSize: 12, color: "#333" }}>
+          {completed}/{total}
+        </div>
+      )}
+    </div>
+  );
+}
