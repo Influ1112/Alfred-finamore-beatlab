@@ -1,0 +1,97 @@
+import React, { useEffect, useState } from "react";
+import { useRouter } from "next/router";
+import LessonCard, { Lesson } from "../components/LessonCard";
+import ProgressBar from "../components/ProgressBar";
+import api, { loadAuthTokenFromStorage } from "../lib/api";
+
+/**
+ * Lessons page: requires login for progress marking.
+ */
+
+export default function LessonsPage() {
+  const router = useRouter();
+  const [lessons, setLessons] = useState<Lesson[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [completedCount, setCompletedCount] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const [hasToken, setHasToken] = useState(false);
+
+  useEffect(() => {
+    const t = loadAuthTokenFromStorage();
+    setHasToken(Boolean(t));
+    fetchLessons();
+    if (t) fetchProgress();
+  }, []);
+
+  const fetchLessons = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const r = await api.get("/lessons");
+      const data = r.data?.data ?? [];
+      setLessons(data);
+    } catch (err) {
+      setError("Failed to load lessons");
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchProgress = async () => {
+    try {
+      const r = await api.get("/progress");
+      setCompletedCount(r.data?.completed ?? 0);
+    } catch (err) {
+      console.warn("Failed to fetch progress (are you logged in?)", err);
+    }
+  };
+
+  const onStart = async (lesson: Lesson) => {
+    if (!hasToken) {
+      if (confirm("Sign in to track progress and unlock premium. Go to login?")) {
+        router.push("/login");
+      }
+      return;
+    }
+
+    try {
+      const r = await api.post("/progress", { lessonId: lesson.id });
+      const completed = r.data?.completed;
+      if (typeof completed === "number") setCompletedCount(completed);
+      alert(`Starting: ${lesson.title}`);
+      router.push(`/lessons/${lesson.id}`);
+    } catch (err) {
+      console.error("Failed to mark completed:", err);
+      alert("Could not mark lesson complete right now.");
+    }
+  };
+
+  if (loading) return <main style={{ padding: 40 }}>Loading lessons…</main>;
+
+  return (
+    <main style={{ padding: 40 }}>
+      <h1 style={{ marginTop: 0 }}>Lessons</h1>
+
+      <div style={{ maxWidth: 960, marginBottom: 20 }}>
+        <ProgressBar completed={completedCount} total={lessons.length} />
+      </div>
+
+      {!hasToken && (
+        <div style={{ marginBottom: 12 }}>
+          <a href="/login">Sign in</a> to track progress and unlock purchases.
+        </div>
+      )}
+
+      <div>
+        {lessons.map((lesson) => (
+          <LessonCard
+            key={lesson.id}
+            lesson={lesson}
+            onStart={onStart}
+          />
+        ))}
+      </div>
+    </main>
+  );
+}
