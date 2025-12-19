@@ -1,0 +1,35 @@
+import type { NextApiRequest, NextApiResponse } from "next";
+
+type JokeResponse = {
+  id?: string;
+  joke?: string;
+  status?: number;
+  [k: string]: any;
+};
+
+export default async function handler(req: NextApiRequest, res: NextApiResponse<JokeResponse | { error: string }>) {
+  try {
+    // We proxy the external API to avoid CORS and to centralize any future changes / caching.
+    const resp = await fetch("https://icanhazdadjoke.com/", {
+      headers: {
+        Accept: "application/json",
+        "User-Agent": "Beatlab-Joke-Generator (+https://github.com/Alfredfinamore/beatlab)"
+      },
+      // it's fine to use GET; no body required
+    });
+
+    if (!resp.ok) {
+      return res.status(502).json({ error: "Failed to fetch joke from upstream API" });
+    }
+
+    const data = (await resp.json()) as JokeResponse;
+
+    // Cache on CDN / server for a short time (adjust as needed)
+    res.setHeader("Cache-Control", "s-maxage=60, stale-while-revalidate=120");
+
+    return res.status(200).json(data);
+  } catch (err) {
+    console.error("API /api/joke error:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+}
